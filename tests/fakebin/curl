@@ -31,6 +31,14 @@ case "$url" in
         # (wird von `| env CODEX_RELEASE=... sh` ausgeführt).
         cat "${HARNESS_ASSETS:?}/mock-codex-bootstrap.sh"
         ;;
+    *nodejs.org/dist/latest-v22.x/SHASUMS256.txt)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (node-shasums)" >&2; exit 1; }
+        cp "${HARNESS_NODE_SHASUMS:?HARNESS_NODE_SHASUMS fehlt}" "$out"
+        ;;
+    *nodejs.org/dist/latest-v22.x/*linux-x64.tar.gz)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (node-tarball)" >&2; exit 1; }
+        cp "${HARNESS_NODE_TARBALL:?HARNESS_NODE_TARBALL fehlt}" "$out"
+        ;;
     *ttyd/releases/download/*ttyd.x86_64)
         [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (ttyd)" >&2; exit 1; }
         # Gleiche Quelle wie die SHA256SUMS-Zeile unten → Checksumme stimmt.
@@ -46,6 +54,13 @@ case "$url" in
         # Web-Terminal-Check (Port 8091): 200 wenn codex-ai-web aktiv ist
         if [[ "$url" == *":8091"* ]]; then
             if [[ -f "$STATE/systemd/codex-ai-web.service.active" ]]; then
+                printf '200'
+            else
+                printf '000'
+            fi
+        # Web-UI-Check (Port 8092): 200 wenn codex-ai-ui aktiv ist
+        elif [[ "$url" == *":8092"* ]]; then
+            if [[ -f "$STATE/systemd/codex-ai-ui.service.active" ]]; then
                 printf '200'
             else
                 printf '000'

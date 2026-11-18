@@ -51,6 +51,9 @@ Das Script:
 | `--port PORT` | 8091 | Web-Terminal-Port im CT |
 | `--codex-version VER` | `latest` | feste Version z. B. `0.170.0`; `latest` = immer neuste |
 | `--api-key KEY` | – | `OPENAI_API_KEY` + non-interaktiver Login |
+| `--webui` | – | zusätzlich die **CloudCLI-Web-UI** installieren (moderne Chat-Oberfläche für Codex, Port 8092, Node 22 wird mitgeliefert) |
+| `--webui-port PORT` | 8092 | Port der Web-UI im CT |
+| `--webui-only` | – | nur die Web-UI im bestehenden CT nachrüsten |
 | `--force` | – | bestehenden CT löschen + neu anlegen (nächste freie ID) |
 | `--yes / -y` | – | Rückfragen überspringen |
 | `--update` / `--uninstall` / `--status` / `--debug` | – | Verwaltungsmodi |
@@ -100,6 +103,26 @@ im Container: `/opt/codex-ai/LOGIN-HINWEISE`.
 - **Workspace:** `/root/codex-workspace` (im CT) – hier arbeitet Codex.
 - Reboot-sicher: CT startet mit dem Host (`onboot=1`), systemd startet beide
   Units, der Respawn-Wrapper startet Codex neu, falls die Session beendet wird.
+
+## 🖥️ Zusätzliche Web-UI: CloudCLI (claudecodeui)
+
+```bash
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/CodexAI-Server/main/install/codex-ai-server.sh)" --webui
+```
+
+Installiert zusätzlich zur ttyd-Terminal-UI die **CloudCLI-Web-UI**
+([siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) – React-Chat-Oberfläche,
+Session-Verlauf, Datei-Explorer, mobil-tauglich) unter `http://<CT-IP>:8092`:
+
+- läuft als eigener systemd-Service `codex-ai-ui.service` (Node 22 nach
+  `/opt/node22`, SHA256-geprüft; npm-Paket `@cloudcli-ai/cloudcli`)
+- nutzt **dieselbe Codex-Installation + denselben Login** wie das Terminal
+  (`~/.codex/auth.json` – die UI nimmt die neuere System-Installation, nicht
+  ihr gebündeltes Codex)
+- **Beim ersten Öffnen ein Konto anlegen** (lokal gespeichert in
+  `/opt/codex-ai/cloudcli/auth.db`), danach damit einloggen
+- Im bestehenden CT nachrüsten: `... " --webui-only` · beim `--update` wird
+  eine installierte Web-UI automatisch mitschaltet und aktualisiert
 
 ## 🔄 Update
 
@@ -157,4 +180,6 @@ tests/run-tests.sh
 
 ## Lizenz
 
-MIT (siehe LICENSE). Codex selbst: Apache-2.0 (openai/codex), ttyd: MIT.
+MIT (siehe LICENSE). Die installierten Komponenten unterliegen eigenen
+Lizenzen – Codex: Apache-2.0 (openai/codex), ttyd: MIT, CloudCLI-Web-UI:
+AGPL-3.0 (siteboon/claudecodeui).

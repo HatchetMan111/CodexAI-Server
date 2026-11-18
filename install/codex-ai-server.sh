@@ -53,6 +53,9 @@ CT_PASSWORD=""              # leer = automatisch generieren
 PORT=8091                   # Web-Terminal-Port im Container
 API_KEY=""                  # optional: OPENAI_API_KEY (sonst Login per Device-Code/ChatGPT im 1. Lauf)
 WEB_PASSWORD=""             # Basic-Auth-Passwort für ttyd (leer = automatisch)
+WEBUI=0                     # 1 = CloudCLI-Web-UI (claudecodeui, moderne Chat-Oberfläche) zusätzlich installieren
+WEBUI_PORT=8092             # Port der CloudCLI-Web-UI im Container
+WEBUI_ONLY=false            # nur die Web-UI im BESTEHENDEN CT nachrüsten
 UNINSTALL=false
 UPDATE=false
 STATUS_CHECK=false
@@ -247,6 +250,9 @@ parse_args() {
             --port)          PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --codex-version) CODEX_VERSION="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --api-key)       API_KEY="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --webui)         WEBUI=1; i=$((i+1)) ;;
+            --webui-port)    WEBUI_PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --webui-only)    WEBUI_ONLY=true; WEBUI=1; i=$((i+1)) ;;
             --force)         FORCE_RECREATE=true; i=$((i+1)) ;;
             --yes|-y)        ASSUME_YES=true; i=$((i+1)) ;;
             --update)        UPDATE=true; i=$((i+1)) ;;
@@ -281,6 +287,10 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
   --codex-version VER   Codex-Version (Default: latest; auch feste Version z. B. 0.170.0)
   --api-key KEY         OPENAI_API_KEY setzen + direkten Login (sonst Login per
                         Device-Code im Web-Terminal – ChatGPT-Plan ODER API-Key)
+  --webui               Zusätzlich die moderne CloudCLI-Web-UI installieren (claudecodeui,
+                        Chat-Oberfläche für Codex, Port 8092 – Node 22 wird mitgeliefert)
+  --webui-port PORT     Port der Web-UI im Container (Default: 8092)
+  --webui-only          Nur die Web-UI im BESTEHENDEN Container nachrüsten
   --force               Vorhandenen Container mit gleichem Hostname löschen und neu anlegen
   --yes / -y            Rückfragen überspringen
   --update              Codex-Version im bestehenden Container erneuern (Login bleibt)
@@ -390,6 +400,48 @@ else
     exit 10
 fi
 
+if [[ "${WEBUI:-0}" == "1" ]]; then
+    echo ">>> Web-UI (CloudCLI aka claudecodeui, Port ${WEBUI_PORT}) installieren ..."
+    # Node 22 (Debian-apt liefert nur 18, CloudCLI braucht v22+): offizielles
+    # Binary nach /opt/node22 (Muster ZCodeAI-Server), SHA-256 gegen
+    # SHASUMS256.txt geprüft. tar.gz statt .tar.xz (kein xz-utils nötig).
+    if [[ ! -x /opt/node22/bin/node ]]; then
+        curl -fsSL --retry 3 "https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt" -o /tmp/node-SHASUMS256.txt
+        NODE_TARBALL=\$(grep -o 'node-v22[0-9.]*-linux-x64.tar.gz' /tmp/node-SHASUMS256.txt | head -1)
+        if [[ -z "\$NODE_TARBALL" ]]; then
+            echo "FEHLER: node-v22-linux-x64-Tarball nicht in SHASUMS256.txt gefunden."
+            exit 17
+        fi
+        NODE_SUM=\$(awk -v t="\$NODE_TARBALL" '\$2 == t {print \$1}' /tmp/node-SHASUMS256.txt)
+        curl -fsSL --retry 3 "https://nodejs.org/dist/latest-v22.x/\${NODE_TARBALL}" -o "/tmp/\${NODE_TARBALL}"
+        echo "\${NODE_SUM}  /tmp/\${NODE_TARBALL}" | sha256sum -c -
+        mkdir -p /opt/node22
+        tar -xzf "/tmp/\${NODE_TARBALL}" -C /opt/node22 --strip-components=1
+        rm -f "/tmp/\${NODE_TARBALL}" /tmp/node-SHASUMS256.txt
+    fi
+    NODE_V=\$(/opt/node22/bin/node -v 2>/dev/null || true)
+    if [[ "\$NODE_V" == v22* ]]; then
+        echo "Node \${NODE_V} einsatzbereit (/opt/node22)"
+    else
+        echo "FEHLER: /opt/node22/bin/node meldet keine v22-Version (\${NODE_V:-<leer>}) – CloudCLI braucht Node 22+."
+        exit 18
+    fi
+    # npm-Abhängigkeiten mit nativen Modulen (bcrypt, better-sqlite3, node-pty):
+    # Prebuilds decken Node 22 linux-x64 meist ab, sonst node-gyp →
+    # build-essential/python3 müssen DA sein (Grube 'Build-Maschine ≠ Ziel-Umgebung').
+    apt-get install -y -qq build-essential python3 >/dev/null
+    mkdir -p /opt/codex-ai/cloudcli
+    /opt/node22/bin/npm install -g "@cloudcli-ai/cloudcli@latest" --no-audit --no-fund
+    CLOUDCLI_MAIN="/opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/index.js"
+    if [[ ! -f "\$CLOUDCLI_MAIN" ]]; then
+        echo "FEHLER: CloudCLI-Server-Einstiegspunkt nicht gefunden."
+        echo "  Erwartet: \$CLOUDCLI_MAIN"
+        echo "  Inhalt: \$(ls /opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server 2>/dev/null | head -5)"
+        exit 19
+    fi
+    echo "CloudCLI Web-UI installiert (Codex-Backend nutzt die System-Installation)"
+fi
+
 echo ">>> Workspace + Datenpfad anlegen (/root/codex-workspace) ..."
 mkdir -p /root/codex-workspace
 mkdir -p /opt/codex-ai
@@ -467,6 +519,10 @@ install -m 644 /tmp/codexai-src/app/codex-ai-web.service /etc/systemd/system/cod
 sed -i "s/__PORT__/${PORT}/g; s/__WEB_PASSWORD__/\${WEB_PASSWORD}/g" \
     /etc/systemd/system/codex-ai-session.service \
     /etc/systemd/system/codex-ai-web.service
+if [[ "${WEBUI:-0}" == "1" ]]; then
+    install -m 644 /tmp/codexai-src/app/codex-ai-ui.service /etc/systemd/system/codex-ai-ui.service
+    sed -i "s/__WEBUI_PORT__/${WEBUI_PORT}/g" /etc/systemd/system/codex-ai-ui.service
+fi
 
 # Aufräumen erst NACH allen installs
 rm -rf /tmp/codexai-src /tmp/codexai-installer.tar.gz
@@ -475,6 +531,11 @@ echo ">>> Service aktivieren (Session + Web-Terminal) ..."
 systemctl daemon-reload
 systemctl enable --now codex-ai-session.service codex-ai-web.service
 systemctl restart codex-ai-session.service codex-ai-web.service
+if [[ "${WEBUI:-0}" == "1" ]]; then
+    echo ">>> Web-UI-Service aktivieren (CloudCLI auf Port ${WEBUI_PORT}) ..."
+    systemctl enable --now codex-ai-ui.service
+    systemctl restart codex-ai-ui.service
+fi
 
 echo ">>> Setup abgeschlossen. Log: /var/log/codex-ai-setup.log"
 INNEREOF
@@ -495,6 +556,7 @@ run_inner_setup() {
     # Exit-Code (Fehler im inner liefen als "erfolgreich" durch!).
     pct exec "$ct_id" -- env CODEX_VERSION="$CODEX_VERSION" PORT="$PORT" \
         WEB_PASSWORD="$WEB_PASSWORD" API_KEY="$API_KEY" HOST_DNS="$HOST_DNS" \
+        WEBUI="$WEBUI" WEBUI_PORT="$WEBUI_PORT" \
         bash -c "bash /root/setup-inner.sh 2>&1 | tee /var/log/codex-ai-setup.log; exit \${PIPESTATUS[0]}"
 }
 
@@ -555,6 +617,35 @@ verify_installation() {
         sleep 1
     done
 
+    # Web-UI (CloudCLI) aktiv + erreichbar?
+    if [[ "$WEBUI" == "1" ]]; then
+        tries=0
+        while true; do
+            if pct exec "$ct_id" -- systemctl is-active --quiet codex-ai-ui.service 2>/dev/null; then
+                ok "Service codex-ai-ui.service läuft (CloudCLI-Web-UI)"
+                break
+            fi
+            tries=$((tries + 1))
+            if [[ $tries -ge 30 ]]; then
+                die "Service codex-ai-ui.service läuft nicht.\n  Debug: pct exec $ct_id -- journalctl -u codex-ai-ui -e"
+            fi
+            sleep 1
+        done
+        tries=0
+        while true; do
+            code=$(pct exec "$ct_id" -- curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEBUI_PORT}/" || true)
+            if [[ "$code" == "200" ]]; then
+                ok "Web-UI antwortet (HTTP 200 auf Port ${WEBUI_PORT})"
+                break
+            fi
+            tries=$((tries + 1))
+            if [[ $tries -ge 30 ]]; then
+                die "Web-UI antwortet nicht (letzter HTTP-Code: ${code:-unbekannt}).\n  Debug: pct exec $ct_id -- journalctl -u codex-ai-ui -e"
+            fi
+            sleep 1
+        done
+    fi
+
     # Login-Status: mit --api-key MUSS Codex eingeloggt sein; ohne Key ist der
     # Login eine Benutzer-Aufgabe (Warnung statt Abbruch).
     if ! pct exec "$ct_id" -- sh -c 'export PATH=/usr/local/bin:$PATH; codex login status >/dev/null 2>&1'; then
@@ -590,6 +681,9 @@ print_summary() {
     if [[ -n "$API_KEY" ]]; then
         echo -e "  ${GREEN}  🔏 API-Key:       gesetzt (${API_KEY:0:8}…, in /opt/codex-ai/codex.env)${NC}"
     fi
+    if [[ "$WEBUI" == "1" ]]; then
+        echo -e "  ${GREEN}  🖥️  Web-UI:       http://${ct_ip}:${WEBUI_PORT}  (CloudCLI – Chat-Oberfläche für Codex)${NC}"
+    fi
     echo -e "  ${GREEN}  📁 Workspace:     /root/codex-workspace  (im Container)${NC}"
     echo -e "  ${GREEN}  🧠 Codex:         ${CODEX_VERSION} (offizieller Standalone-Installer)${NC}"
     echo -e "  ${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
@@ -611,6 +705,14 @@ print_summary() {
     echo "  3. Fertig – die Session läuft weiter, auch wenn du den Browser schließt."
     echo "     Zurückkehren: URL wieder öffnen (oder ssh/pct enter → tmux attach -t codex)."
     echo ""
+    if [[ "$WEBUI" == "1" ]]; then
+        echo -e "  ${CYAN}Moderne Web-UI (CloudCLI) unter http://${ct_ip}:${WEBUI_PORT}:${NC}"
+        echo "  1. Beim ERSTEN Öffnen ein Konto anlegen (CloudCLI-eigene Auth, lokal in"
+        echo "     /opt/codex-ai/cloudcli/auth.db) – danach damit einloggen."
+        echo "  2. Provider/Agent „Codex“ wählen – die UI nutzt dieselbe System-"
+        echo "     Installation + denselben Login wie das Terminal (~/.codex/auth.json)."
+        echo "  3. Codex muss eingeloggt sein (Schritt 2 oben), sonst keine Chats."
+    fi
     echo -e "  ${CYAN}Login-Hilfe liegt auch im Container: /opt/codex-ai/LOGIN-HINWEISE${NC}"
     echo ""
     echo -e "  ${CYAN}Nützliche Befehle (exakt kopierbar):${NC}"
@@ -622,6 +724,35 @@ print_summary() {
     warn "Hinweis: das Web-Terminal ist ein ROOT-Terminal im Container (LXC-Isolation)"
     warn "und Codex ist ein Agent mit Shell-Zugriff – Port ${PORT} NICHT ohne VPN/Firewall"
     warn "ins Internet exposen. Basic-Auth ist kein Vollschutz."
+}
+
+# ── Web-UI-only (CloudCLI im bestehenden CT nachrüsten) ────────────────────
+do_webui_only() {
+    header "🖥️  Web-UI (CloudCLI) im bestehenden Container nachrüsten (--webui-only)"
+
+    local ct_id
+    ct_id=$(find_ct_id_by_hostname || true)
+    if [[ -z "$ct_id" ]]; then
+        die "Kein Container mit Hostname '$CT_HOSTNAME' gefunden.\n  Erst installieren:  ${ONE_LINER}"
+    fi
+    CT_ID="$ct_id"
+
+    ensure_ct_running "$ct_id"
+    verify_ct_dns "$ct_id"
+
+    # Bestehendes Web-Terminal-Passwort übernehmen (Summary soll weiter stimmen)
+    if [[ -z "$WEB_PASSWORD" ]]; then
+        WEB_PASSWORD=$(pct exec "$ct_id" -- sh -c "sed -n 's/.*-c ${TTYD_USER}:\([^ ]*\) .*/\1/p' /etc/systemd/system/codex-ai-web.service" 2>/dev/null || true)
+        if [[ -z "$WEB_PASSWORD" ]]; then
+            WEB_PASSWORD=$(openssl rand -hex 16 2>/dev/null || true)
+        fi
+    fi
+
+    run_inner_setup "$ct_id"
+    verify_installation "$ct_id"
+
+    ok "--webui-only abgeschlossen – Codex-Session blieb unverändert."
+    print_summary
 }
 
 # ── Install ────────────────────────────────────────────────────────────────
@@ -731,6 +862,12 @@ do_update() {
     ensure_ct_running "$ct_id"
     verify_ct_dns "$ct_id"
 
+    # Bereits installierte Web-UI automatisch mitschalten (ohne --webui-Flag)
+    if [[ "$WEBUI" != "1" ]] && pct exec "$ct_id" -- test -f /opt/codex-ai/cloudcli/auth.db 2>/dev/null; then
+        WEBUI=1
+        info "Bestehende Web-UI erkannt – Update läuft mit (--webui implizit)."
+    fi
+
     if [[ -z "$WEB_PASSWORD" ]]; then
         # Bestehendes Web-Terminal-Passwort aus der Unit übernehmen (Session bleibt
         # mit demselben Login erreichbar – kein neuer Wert, keine Überraschung).
@@ -815,6 +952,28 @@ do_status() {
         warn "tmux:      Session 'codex' fehlt (Service neu starten: pct exec $ct_id -- systemctl restart codex-ai-session)"
     fi
 
+    # Web-UI (nur melden, wenn installiert)
+    if pct exec "$ct_id" -- test -f /etc/systemd/system/codex-ai-ui.service 2>/dev/null; then
+        local ui_active=0 ui_port
+        if pct exec "$ct_id" -- systemctl is-active --quiet codex-ai-ui.service 2>/dev/null; then
+            ui_active=1
+            ok "Web-UI:    codex-ai-ui.service läuft"
+        else
+            err "Web-UI:    codex-ai-ui.service läuft NICHT"
+            info "Logs:      pct exec $ct_id -- journalctl -u codex-ai-ui -e"
+        fi
+        ui_port=$(pct exec "$ct_id" -- sh -c "sed -n 's/.*SERVER_PORT=\([0-9]*\).*/\1/p' /etc/systemd/system/codex-ai-ui.service" 2>/dev/null || true)
+        if [[ "$ui_active" == "1" && -n "$ip" ]]; then
+            local ui_code
+            ui_code=$(pct exec "$ct_id" -- curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${ui_port:-8092}/" || true)
+            if [[ "$ui_code" == "200" ]]; then
+                ok "Web-UI:    http://${ip}:${ui_port:-8092}  (CloudCLI – Chat-Oberfläche für Codex)"
+            else
+                warn "Web-UI:    HTTP-Code ${ui_code:-unbekannt} von http://${ip}:${ui_port:-8092}"
+            fi
+        fi
+    fi
+
     local ip code codex_ver web_pw login_out
     ip=$(get_ct_ip "$ct_id")
     if [[ -n "$ip" ]]; then
@@ -851,6 +1010,8 @@ elif $UPDATE; then
     do_update
 elif $STATUS_CHECK; then
     do_status
+elif $WEBUI_ONLY; then
+    do_webui_only
 else
     do_install
 fi

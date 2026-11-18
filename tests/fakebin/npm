@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Mock: npm – installiert die CloudCLI-Dist-Struktur, die der Installer
+# danach prüft (dist-server/server/index.js) und loggt die Aufrufe.
+set -uo pipefail
+
+STATE="${HARNESS_STATE:?HARNESS_STATE fehlt}"
+LOG="$STATE/npm-calls.log"
+mkdir -p "$STATE"
+echo "npm $*" >> "$LOG"
+
+case "${1:-}" in
+    install)
+        target="/opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server"
+        mkdir -p "$target"
+        printf '// mock cloudcli server (dist vorgebaut)\n' > "$target/index.js"
+        mkdir -p "/opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/modules/cli"
+        printf '#!/usr/bin/env bash\necho "mock-cloudcli-cli: $*"\n' > "/opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/modules/cli/cli.js"
+        chmod +x "/opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/modules/cli/cli.js"
+        ;;
+    *)
+        ;;
+esac
+exit 0

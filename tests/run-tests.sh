@@ -75,6 +75,12 @@ seed_full_ct() {
     echo 1 > "$HARNESS_STATE/tmux.session"
 }
 
+seed_webui() {
+    # Bestehende CloudCLI-Web-UI (Installer-Detection via auth.db)
+    mkdir -p /opt/codex-ai/cloudcli
+    touch /opt/codex-ai/cloudcli/auth.db
+}
+
 seed_preset() {
     local preset="$1"
     mkdir -p "$HARNESS_STATE/cts" "$HARNESS_STATE/systemd"
@@ -86,9 +92,21 @@ seed_preset() {
             printf 'stopped codex-ai-server 10.0.0.205\n' > "$HARNESS_STATE/cts/205"
             seed_full_ct oldpw123
             ;;
+        existing-stopped-ui)
+            printf 'stopped codex-ai-server 10.0.0.205\n' > "$HARNESS_STATE/cts/205"
+            seed_full_ct oldpw123
+            seed_webui
+            ;;
         status-running)
             printf 'running codex-ai-server 10.0.0.42\n' > "$HARNESS_STATE/cts/206"
             seed_full_ct seedpw9876
+            touch "$HARNESS_STATE/systemd/codex-ai-session.service.active"
+            touch "$HARNESS_STATE/systemd/codex-ai-web.service.active"
+            ;;
+        status-running-ui)
+            printf 'running codex-ai-server 10.0.0.42\n' > "$HARNESS_STATE/cts/206"
+            seed_full_ct seedpw9876
+            seed_webui
             touch "$HARNESS_STATE/systemd/codex-ai-session.service.active"
             touch "$HARNESS_STATE/systemd/codex-ai-web.service.active"
             ;;
@@ -202,7 +220,68 @@ case_fresh_install() {
     t=$(cat "$HARNESS_STATE/tmux-calls.log" 2>/dev/null || echo "")
     assert_contains "$t" "new-session -d -s codex" "tmux-Session 'codex' erzeugt"
 
+    # Ohne --webui darf KEINE UI-Unit existieren
+    assert_no_file /etc/systemd/system/codex-ai-ui.service "ohne --webui keine CloudCLI-UI-Unit"
+    assert_no_file /opt/node22 "ohne --webui kein Node unter /opt/node22"
+
     if [[ -f "$HARNESS_STATE/cts/200" ]]; then ok "CT-ID 200 vergeben (erste freie ab 200)"; else fail "CT-ID 200 vergeben (erste freie ab 200)"; fi
+}
+
+case_webui() {
+    # --webui: CloudCLI (claudecodeui) als zusätzliche Chat-Oberfläche (Port 8092)
+    run_installer --webui
+    assert_eq "$RC" 0 "Install-Exit-Code 0 (--webui)"
+    assert_contains "$OUT" "v22.23.5 einsatzbereit" "Node 22 installiert + verifiziert"
+    assert_contains "$OUT" "CloudCLI Web-UI installiert" "CloudCLI über npm installiert"
+    assert_contains "$OUT" "Web-UI antwortet (HTTP 200 auf Port 8092)" "Web-UI HTTP-Check grün"
+    assert_contains "$OUT" "Web-UI:       http://10.0.0.42:8092" "Summary zeigt Web-UI-URL"
+    assert_contains "$OUT" "Konto anlegen" "Summary erklärt First-Run-Account"
+
+    local n
+    n=$(cat "$HARNESS_STATE/npm-calls.log" 2>/dev/null || echo "")
+    assert_contains "$n" "install -g @cloudcli-ai/cloudcli@latest" "CloudCLI via npm install -g"
+    assert_file /opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/index.js "CloudCLI-Server-Einstiegspunkt vorhanden"
+    assert_file /opt/codex-ai/cloudcli "CloudCLI-Datenpfad angelegt"
+
+    assert_file /etc/systemd/system/codex-ai-ui.service "Web-UI-Unit installiert"
+    local u
+    u=$(cat /etc/systemd/system/codex-ai-ui.service)
+    assert_contains "$u" "SERVER_PORT=8092" "__WEBUI_PORT__ wurde ersetzt (8092)"
+    assert_contains "$u" "DATABASE_PATH=/opt/codex-ai/cloudcli/auth.db" "Auth-DB auf fixem Pfad"
+    assert_contains "$u" "/root/.local/bin" "Unit-PATH enthält Codex-Wrapper (System-Codex schlägt gebündeltes)"
+    assert_contains "$u" "Restart=always" "Web-UI-Unit hat Restart=always"
+    assert_file "$HARNESS_STATE/systemd/codex-ai-ui.service.active" "Web-UI-Service aktiv"
+
+    local urls
+    urls=$(cat "$HARNESS_STATE/curl-calls/urls.log" 2>/dev/null || echo "")
+    assert_contains "$urls" "nodejs.org/dist/latest-v22.x/SHASUMS256.txt" "Node-SHASUMS geladen"
+    assert_contains "$urls" "nodejs.org/dist/latest-v22.x/node-v22" "Node-Tarball geladen"
+}
+
+case_webui_only() {
+    # --webui-only: nur die Web-UI im BESTEHENDEN CT nachrüsten (kein pct create!)
+    run_installer --webui-only
+    assert_eq "$RC" 0 "Webui-only Exit-Code 0"
+    assert_contains "$OUT" "Web-UI (CloudCLI) im bestehenden Container nachrüsten" "Webui-only-Modus erkannt"
+    assert_contains "$OUT" "--webui-only abgeschlossen" "Webui-only Abschlussmeldung"
+    assert_no_file "$HARNESS_STATE/pct-create-206.args" "kein pct create im Webui-only-Modus"
+    assert_file /etc/systemd/system/codex-ai-ui.service "Web-UI-Unit installiert"
+    assert_file "$HARNESS_STATE/systemd/codex-ai-ui.service.active" "Web-UI-Service aktiv"
+}
+
+case_update_ui() {
+    # --update ohne --webui-Flag: bestehende Web-UI wird automatisch mitschaltet
+    run_installer --update
+    assert_eq "$RC" 0 "Update-Exit-Code 0 (CT mit Web-UI war gestoppt)"
+    assert_contains "$OUT" "Bestehende Web-UI erkannt – Update läuft mit" "UI-Auto-Detection via auth.db"
+    local n
+    n=$(cat "$HARNESS_STATE/npm-calls.log" 2>/dev/null || echo "")
+    assert_contains "$n" "install -g @cloudcli-ai/cloudcli@latest" "CloudCLI im Update-Pfad aktualisiert"
+    assert_file /etc/systemd/system/codex-ai-ui.service "Web-UI-Unit weiterhin installiert"
+    assert_file "$HARNESS_STATE/systemd/codex-ai-ui.service.active" "Web-UI-Service nach Update aktiv"
+    local u
+    u=$(cat /etc/systemd/system/codex-ai-web.service)
+    assert_contains "$u" "codex:oldpw123" "Web-PW wurde vom bestehenden CT übernommen (nicht rotiert)"
 }
 
 case_id_skip() {
@@ -414,7 +493,8 @@ declare -A PRESETS=(
     [status_stopped]=status-stopped [uninstall_yes]=uninstall [uninstall_confirm]=uninstall
     [dup_hostname]=dup [api_key]=fresh [version_pin]=fresh [version_latest]=fresh
     [bootstrap_fail]=fresh [help]=fresh [zero_fallback]=status-running
-    [error_chain]=fresh [ttyd_version_format]=fresh
+    [error_chain]=fresh [ttyd_version_format]=fresh [webui]=fresh
+    [webui_only]=status-running-ui [update_ui]=existing-stopped-ui
 )
 declare -A DNS_MODES=(
     [dns_late]=late [dns_flaky]=flaky4 [dns_dead]=dead
@@ -436,6 +516,8 @@ run_case() {
     : > "$RESULTS_FILE"
     export HARNESS_STATE="$state" HARNESS_SRC_TARBALL="$WORK/src.tar.gz" \
         HARNESS_ASSETS="$ASSETS" RESULTS_FILE FAKEBIN_PATH="$FAKEBIN" \
+        HARNESS_NODE_TARBALL="$WORK/node-fixture.tar.gz" \
+        HARNESS_NODE_SHASUMS="$WORK/node-shasums.txt" \
         HARNESS_DNS_MODE="${DNS_MODES[$name]:-ok}" \
         HARNESS_FAIL_CREATE="${FAIL_CREATE[$name]:-0}" \
         HARNESS_BOOTSTRAP_FAIL="${BOOTSTRAP_FAIL[$name]:-0}"
@@ -479,6 +561,9 @@ CASES=(
     version_pin
     version_latest
     bootstrap_fail
+    webui
+    webui_only
+    update_ui
     help
     zero_fallback
     error_chain
@@ -533,6 +618,17 @@ echo "   Installer: $INSTALLER"
 mkdir -p "$WORK/pkgroot/CodexAI-Server-main"
 cp -r "$REPO/app" "$WORK/pkgroot/CodexAI-Server-main/app"
 tar --owner=0 --group=0 -czf "$WORK/src.tar.gz" -C "$WORK/pkgroot" CodexAI-Server-main
+
+# Node-22-Fixture: Tarball mit mock-node (bin/node) + npm-Delegier-Wrapper
+# (bin/npm → exec npm: löst über PATH zum Fakebin-Mock auf) – SHASUMS-Zeile
+# wird aus dem echten SHA des Fixtures erzeugt (ttyd-Muster).
+mkdir -p "$WORK/node-pkgroot/node-v22.23.5-linux-x64/bin"
+printf '#!/usr/bin/env bash\necho "v22.23.5"\n' > "$WORK/node-pkgroot/node-v22.23.5-linux-x64/bin/node"
+printf '#!/usr/bin/env bash\nexec npm "$@"\n' > "$WORK/node-pkgroot/node-v22.23.5-linux-x64/bin/npm"
+chmod +x "$WORK/node-pkgroot/node-v22.23.5-linux-x64/bin/node" "$WORK/node-pkgroot/node-v22.23.5-linux-x64/bin/npm"
+tar --owner=0 --group=0 -czf "$WORK/node-fixture.tar.gz" -C "$WORK/node-pkgroot" node-v22.23.5-linux-x64
+NODE_SUM=$(sha256sum "$WORK/node-fixture.tar.gz" | awk '{print $1}')
+printf '%s  node-v22.23.5-linux-x64.tar.gz\n' "$NODE_SUM" > "$WORK/node-shasums.txt"
 
 echo ""
 SELECTED=("${CASES[@]}")

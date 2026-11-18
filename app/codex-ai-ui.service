@@ -1,0 +1,22 @@
+[Unit]
+Description=CodexAI Web-UI (CloudCLI auf Codex 'codex')
+Documentation=https://github.com/HatchetMan111/CodexAI-Server
+After=network-online.target codex-ai-session.service
+Wants=network-online.target
+
+[Service]
+# Port: __WEBUI_PORT__ (vom Installer ersetzt). Env statt .env-Datei.
+# PATH enthält den Codex-Wrapper (/root/.local/bin) VOR dem gebündelten
+# CloudCLI-Codex – resolveCodexCli nimmt ohnehin die neuere Installation.
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/opt/node22/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOST=0.0.0.0
+Environment=SERVER_PORT=__WEBUI_PORT__
+Environment=DATABASE_PATH=/opt/codex-ai/cloudcli/auth.db
+WorkingDirectory=/root/codex-workspace
+ExecStart=/opt/node22/bin/node /opt/node22/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
