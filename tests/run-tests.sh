@@ -7,9 +7,10 @@
 # Schreibpfade per Mount-Namespace (tmpfs über /opt, /root, /usr/local/bin,
 # /var/log, /etc/dhcp, /etc/systemd/system; bind-mount über /etc/resolv.conf).
 # Alle pct/pveam/curl/systemctl/...-Aufrufe werden über tests/fakebin gemockt.
-# Der Codex-Download wird durch ein Fixture-Tarball ersetzt (Inhalt: Mock-
-# Binary), dessen SHA-256 über eine Fixture-Release-API bereitgestellt wird –
-# so durchläuft der Installer den echten Pin→API-Fallback-Verifikationspfad.
+# Der offizielle Codex-Standalone-Installer (chatgpt.com/codex/install.sh)
+# wird durch das Mock-Bootstrap ersetzt (tests/assets/mock-codex-bootstrap.sh):
+# es baut dasselbe packaged-Layout wie das Original (releases/<v>-<target> +
+# current-Symlink + Wrapper in ~/.local/bin) und benutzt das Mock-Codex-Binary.
 #
 # Aufruf:   tests/run-tests.sh            (alle Cases)
 #           tests/run-tests.sh <name> ... (nur bestimmte Cases)
@@ -135,10 +136,20 @@ case_fresh_install() {
     assert_contains "$w" "/usr/local/bin" "Wrapper setzt PATH auf Codex-Binary"
     assert_contains "$w" "codex-workspace" "Wrapper wechselt in Workspace"
 
-    assert_file /usr/local/bin/codex "codex-Binary installiert"
+    assert_file /usr/local/bin/codex "codex-Symlink installiert"
     assert_file /usr/local/bin/ttyd "ttyd installiert"
     assert_contains "$OUT" "ttyd 1.7.7 einsatzbereit" "ttyd-Installations-Nachweis über ttyd -v (Prefix-Match, NICHT ttyd.*VERSION!)"
-    assert_contains "$OUT" "einsatzbereit" "Codex-Installations-Nachweis über codex --version"
+    assert_contains "$OUT" "einsatzbereit (packaged CLI)" "Codex-Installations-Nachweis über codex --version"
+    assert_contains "$OUT" "offizieller Standalone-Installer" "Codex über den offiziellen Installer (Live-Grube #19: nackte musl-Binary reicht nicht)"
+
+    # Packaged-Layout des Standalone-Installers (das braucht die TUI für den Daemon)
+    assert_file /root/.codex/packages/standalone/current "current-Symlink der packaged CLI"
+    assert_file /root/.codex/packages/standalone/current/codex-package.json "codex-package.json vorhanden"
+    assert_file /root/.codex/packages/standalone/current/bin/codex "bin/codex vorhanden"
+    assert_file /root/.codex/packages/standalone/current/bin/codex-code-mode-host "bin/codex-code-mode-host vorhanden"
+    local cur_target
+    cur_target=$(readlink /root/.codex/packages/standalone/current)
+    assert_contains "$cur_target" "0.170.0-x86_64-unknown-linux-musl" "current zeigt auf Release-Verzeichnis (latest → 0.170.0)"
     assert_file /root/codex-workspace "Workspace angelegt"
     assert_file /opt/codex-ai/codex.env "codex.env angelegt"
     assert_mode /opt/codex-ai/codex.env 600 "codex.env ist chmod 600"
@@ -160,12 +171,15 @@ case_fresh_install() {
     # Ohne --api-key: Login ist noch offen → Warnung statt Abbruch
     assert_contains "$OUT" "noch NICHT eingeloggt" "fehlender Login → Warnung (nicht die())"
 
-    # Codex-Download: gepinnte URL + SHA-Verifikation über den API-Digest-Fallback
+    # Codex-Download läuft über den offiziellen Standalone-Installer
     local urls
     urls=$(cat "$HARNESS_STATE/curl-calls/urls.log" 2>/dev/null || echo "")
-    assert_contains "$urls" "github.com/openai/codex/releases/download/rust-v0.170.0/codex-x86_64-unknown-linux-musl.tar.gz" "gepinnte Release-URL geladen"
-    assert_contains "$urls" "api.github.com/repos/openai/codex/releases/tags/rust-v0.170.0" "SHA-Verifikation via GitHub-API-Digest (Pin-Fallback)"
-    assert_contains "$OUT" "SHA-256 verifiziert" "SHA-256-Check durchgelaufen"
+    assert_contains "$urls" "chatgpt.com/codex/install.sh" "offizieller Standalone-Installer geladen"
+    if grep -q "github.com/openai/codex/releases/download" <<< "$urls"; then
+        fail "nackte musl-Binary darf NICHT mehr geladen werden (Live-Grube #19)"
+    else
+        ok "kein Download der nackten musl-Binary mehr (Live-Grube #19)"
+    fi
 
     assert_file "$HARNESS_STATE/systemd/codex-ai-session.service.active" "Session-Service aktiv"
     assert_file "$HARNESS_STATE/systemd/codex-ai-web.service.active" "Web-Service aktiv"
@@ -230,7 +244,7 @@ case_update_stopped() {
     calls=$(cat "$HARNESS_STATE/pct-calls.log" 2>/dev/null || echo "")
     assert_contains "$calls" "pct start 205" "gestoppter CT wurde automatisch gestartet"
     assert_contains "$OUT" "Update abgeschlossen" "Update-Summary erscheint"
-    assert_contains "$OUT" "Download übersprungen" "gleiche Codex-Version → kein Re-Download"
+    assert_contains "$OUT" "offizieller Standalone-Installer" "Codex-Install über den offiziellen Installer re-lief"
     assert_contains "$OUT" "ttyd 1.7.7 einsatzbereit" "ttyd wurde (neu) installiert"
     local u
     u=$(cat /etc/systemd/system/codex-ai-web.service)
@@ -302,24 +316,25 @@ case_version_pin() {
     run_installer --codex-version "0.170.0"
     assert_eq "$RC" 0 "Install-Exit-Code 0 (Versions-Pin)"
     assert_contains "$OUT" "codex-cli 0.170.0" "verifizierte Version"
-    assert_contains "$OUT" "SHA-256 verifiziert" "SHA-256-Check durchgelaufen"
+    assert_contains "$OUT" "CODEX_RELEASE=0.170.0 -> 0.170.0" "Installer lief mit CODEX_RELEASE=0.170.0"
 }
 
 case_version_latest() {
     run_installer --codex-version "latest"
     assert_eq "$RC" 0 "Install-Exit-Code 0 (latest-Auflösung)"
-    assert_contains "$OUT" "Neueste Codex-Version laut GitHub-API: 0.170.0" "Tag aus GitHub-API aufgelöst"
+    assert_contains "$OUT" "CODEX_RELEASE=latest -> 0.170.0" "Installer löst latest selbst auf"
     assert_contains "$OUT" "codex-cli 0.170.0" "aufgelöste Version installiert + verifiziert"
     local urls
     urls=$(cat "$HARNESS_STATE/curl-calls/urls.log" 2>/dev/null || echo "")
-    assert_contains "$urls" "api.github.com/repos/openai/codex/releases/latest" "latest über Release-API ermittelt"
+    assert_contains "$urls" "chatgpt.com/codex/install.sh" "Installer-URL geladen"
 }
 
-case_sha_fail() {
+case_bootstrap_fail() {
     run_installer
-    assert_eq "$RC" 13 "SHA-Mismatch → Installer bricht ab (Exit 13)"
-    assert_contains "$OUT" "SHA-256-MISMATCH" "Diagnose-Message bei_checksum-Fehler"
-    assert_contains "$OUT" "Installationsfehler – Exit-Code 13" "on_error-Fehlerkette"
+    assert_eq "$RC" 8 "Standalone-Installer-Fehler → Exit 8"
+    assert_contains "$OUT" "Standalone-Installer ist fehlgeschlagen" "Diagnose-Message bei Installer-Crash"
+    assert_contains "$OUT" "Installationsfehler – Exit-Code 8" "on_error-Fehlerkette"
+    assert_contains "$OUT" "--debug" "on_error: bash -x-Hinweis mit exaktem Befehl"
 }
 
 case_help() {
@@ -398,7 +413,7 @@ declare -A PRESETS=(
     [dns_dead]=fresh [update_stopped]=existing-stopped [status_running]=status-running
     [status_stopped]=status-stopped [uninstall_yes]=uninstall [uninstall_confirm]=uninstall
     [dup_hostname]=dup [api_key]=fresh [version_pin]=fresh [version_latest]=fresh
-    [sha_fail]=fresh [help]=fresh [zero_fallback]=status-running
+    [bootstrap_fail]=fresh [help]=fresh [zero_fallback]=status-running
     [error_chain]=fresh [ttyd_version_format]=fresh
 )
 declare -A DNS_MODES=(
@@ -407,8 +422,8 @@ declare -A DNS_MODES=(
 declare -A FAIL_CREATE=(
     [error_chain]=1
 )
-declare -A SHA_FAIL=(
-    [sha_fail]=1
+declare -A BOOTSTRAP_FAIL=(
+    [bootstrap_fail]=1
 )
 
 run_case() {
@@ -421,11 +436,9 @@ run_case() {
     : > "$RESULTS_FILE"
     export HARNESS_STATE="$state" HARNESS_SRC_TARBALL="$WORK/src.tar.gz" \
         HARNESS_ASSETS="$ASSETS" RESULTS_FILE FAKEBIN_PATH="$FAKEBIN" \
-        HARNESS_CODEX_TARBALL="$WORK/codex-fixture.tar.gz" \
-        HARNESS_REL_JSON="$WORK/rel-fixture.json" \
         HARNESS_DNS_MODE="${DNS_MODES[$name]:-ok}" \
         HARNESS_FAIL_CREATE="${FAIL_CREATE[$name]:-0}" \
-        HARNESS_SHA_FAIL="${SHA_FAIL[$name]:-0}"
+        HARNESS_BOOTSTRAP_FAIL="${BOOTSTRAP_FAIL[$name]:-0}"
 
     if [[ "$name" == "non_root" || "$name" == "ttyd_version_format" ]]; then
 
@@ -465,7 +478,7 @@ CASES=(
     api_key
     version_pin
     version_latest
-    sha_fail
+    bootstrap_fail
     help
     zero_fallback
     error_chain
@@ -514,23 +527,12 @@ mkdir -p "$WORK"
 echo "🧪 CodexAI-Server Mock-Harness"
 echo "   Installer: $INSTALLER"
 
-# Tarball-Fixtures bauen (simulieren die codeload-/release-Downloads).
+# Tarball-Fixtures bauen (simuliert den codeload-Download des Repos).
 # --owner=0/--group=0: GitHub-Tarballs gehören uid 0 – im User-Namespace
 # wäre ein chown auf phil-uid (1000) unmöglich ("Invalid argument").
 mkdir -p "$WORK/pkgroot/CodexAI-Server-main"
 cp -r "$REPO/app" "$WORK/pkgroot/CodexAI-Server-main/app"
 tar --owner=0 --group=0 -czf "$WORK/src.tar.gz" -C "$WORK/pkgroot" CodexAI-Server-main
-
-# Codex-Fixture-Tarball: EINE Datei (das Mock-Binary, wie im echten
-# 0.170.0-Release) + zugehörige Release-API-Fixture mit passendem digest.
-mkdir -p "$WORK/codex-pkgroot"
-cp "$ASSETS/mock-codex.sh" "$WORK/codex-pkgroot/codex-x86_64-unknown-linux-musl"
-chmod +x "$WORK/codex-pkgroot/codex-x86_64-unknown-linux-musl"
-tar --owner=0 --group=0 -czf "$WORK/codex-fixture.tar.gz" -C "$WORK/codex-pkgroot" codex-x86_64-unknown-linux-musl
-FIXTURE_SHA=$(sha256sum "$WORK/codex-fixture.tar.gz" | awk '{print $1}')
-cat > "$WORK/rel-fixture.json" <<EOF
-{"url":"https://api.github.com/repos/openai/codex/releases/1","assets_url":"https://api.github.com/repos/openai/codex/releases/1/assets","tag_name":"rust-v0.170.0","name":"v0.170.0","draft":false,"prerelease":false,"created_at":"2026-11-18T03:40:48Z","published_at":"2026-11-18T03:40:48Z","assets":[{"url":"https://api.github.com/repos/openai/codex/releases/assets/761755167","id":761755167,"node_id":"RA_kwDOOYsS4c4tZ3Yf","name":"codex-x86_64-unknown-linux-musl.tar.gz","label":"","uploader":{"login":"github-actions[bot]","id":41898282},"content_type":"application/x-gtar","state":"uploaded","size":119025052,"digest":"sha256:${FIXTURE_SHA}","browser_download_url":"https://github.com/openai/codex/releases/download/rust-v0.170.0/codex-x86_64-unknown-linux-musl.tar.gz"}]}
-EOF
 
 echo ""
 SELECTED=("${CASES[@]}")

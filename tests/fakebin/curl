@@ -26,21 +26,10 @@ case "$url" in
         [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (codeload)" >&2; exit 1; }
         cp "${HARNESS_SRC_TARBALL:?HARNESS_SRC_TARBALL fehlt}" "$out"
         ;;
-    *api.github.com/repos/openai/codex/releases*)
-        # Release-API (latest + tags): Fixture-JSON mit tag_name und dem
-        # digest-Feld des Codex-Tarballs. HARNESS_SHA_FAIL=1 verbiegt das
-        # digest → Installer muss mit SHA-256-MISMATCH abbrechen (Exit 13).
-        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (release-api)" >&2; exit 1; }
-        if [[ "${HARNESS_SHA_FAIL:-0}" == "1" ]]; then
-            sed 's/"digest":"sha256:[0-9a-f]*"/"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"/' \
-                "${HARNESS_REL_JSON:?HARNESS_REL_JSON fehlt}" > "$out"
-        else
-            cp "${HARNESS_REL_JSON:?HARNESS_REL_JSON fehlt}" "$out"
-        fi
-        ;;
-    *github.com/openai/codex/releases/download/*codex-x86_64-unknown-linux-musl.tar.gz)
-        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (codex-tarball)" >&2; exit 1; }
-        cp "${HARNESS_CODEX_TARBALL:?HARNESS_CODEX_TARBALL fehlt}" "$out"
+    *chatgpt.com/codex/install.sh*)
+        # Offizieller Standalone-Installer: Mock-Bootstrap auf stdout pipen
+        # (wird von `| env CODEX_RELEASE=... sh` ausgeführt).
+        cat "${HARNESS_ASSETS:?}/mock-codex-bootstrap.sh"
         ;;
     *ttyd/releases/download/*ttyd.x86_64)
         [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (ttyd)" >&2; exit 1; }

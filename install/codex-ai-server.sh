@@ -34,11 +34,8 @@ APP_NAME="codexai"
 REPO_OWNER="HatchetMan111"
 REPO_NAME="CodexAI-Server"
 REPO_BRANCH="main"
-CODEX_VERSION="0.170.0"     # gepinnte Version (Default); auch "latest" oder z. B. 0.171.0
-CODEX_SHA256="d054916ccd28a53820376b8d2f7c875184ca8f40fcd44bbabeb8ee240ce247f5"
-                            # SHA-256 von codex-x86_64-unknown-linux-musl.tar.gz @ rust-v0.170.0
-                            # (gegen die GitHub-API digest-Feld verifiziert); gilt nur für die
-                            # gepinnte Version – andere Versionen verifizieren via API-Digest
+CODEX_VERSION="latest"      # CODEX_RELEASE des offiziellen Standalone-Installers:
+                            # "latest" (Default) oder feste Version z. B. 0.170.0
 TTYD_VERSION="1.7.7"        # Web-Terminal-Binary (statisch, GitHub-Release)
 TTYD_USER="codex"           # Basic-Auth-User für das Web-Terminal
 CT_ID=""                    # leer = automatisch nächste freie ID ab ID_SCAN_START
@@ -190,7 +187,7 @@ verify_ct_dns() {
     local id="$1" ok_count=0 tries=0
     info "Prüfe DNS im Container (3x hintereinander) ..."
     while true; do
-        if pct exec "$id" -- getent hosts github.com api.github.com objects.githubusercontent.com >/dev/null 2>&1; then
+        if pct exec "$id" -- getent hosts github.com api.github.com objects.githubusercontent.com releases.openai.com >/dev/null 2>&1; then
             ok_count=$((ok_count + 1))
             if [[ $ok_count -ge 3 ]]; then
                 ok "DNS im Container funktioniert (3x bestätigt)"
@@ -217,11 +214,11 @@ verify_ct_dns() {
     # Dauerhaft: dhclient-Hook (verhindert das Überschreiben durch Lease-Renewals —
     # chattr +i funktioniert in unprivilegierten LXCs nicht) + nochmal prüfen.
     pct exec "$id" -- bash -c 'mkdir -p /etc/dhcp/dhclient-enter-hooks.d && printf "make_resolv_conf() { :; }\n" > /etc/dhcp/dhclient-enter-hooks.d/no-dns'
-    if pct exec "$id" -- getent hosts github.com api.github.com objects.githubusercontent.com >/dev/null 2>&1; then
+    if pct exec "$id" -- getent hosts github.com api.github.com objects.githubusercontent.com releases.openai.com >/dev/null 2>&1; then
         ok "DNS-Fallback aktiv und gegen DHCP-Überschreiben geschützt – Auflösung funktioniert"
         return 0
     fi
-    die "DNS im Container weiterhin ohne Funktion (auch mit Fallback).\n  Prüfe: pct exec $id -- getent hosts github.com api.github.com objects.githubusercontent.com\n  Firewall/Router: ausgehende DNS-Anfragen (Port 53) am Bridge-Netz erlauben."
+    die "DNS im Container weiterhin ohne Funktion (auch mit Fallback).\n  Prüfe: pct exec $id -- getent hosts github.com api.github.com objects.githubusercontent.com releases.openai.com\n  Firewall/Router: ausgehende DNS-Anfragen (Port 53) am Bridge-Netz erlauben."
 }
 
 # ── Argumente parsen ───────────────────────────────────────────────────────
@@ -281,7 +278,7 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
   --gateway GW          Gateway für statische IP
   --password PW         Root-Passwort des CT (Default: automatisch generiert)
   --port PORT           Web-Terminal-Port im Container (Default: 8091)
-  --codex-version VER   Codex-Version (Default: ${CODEX_VERSION}; auch "latest" oder z. B. 0.171.0)
+  --codex-version VER   Codex-Version (Default: latest; auch feste Version z. B. 0.170.0)
   --api-key KEY         OPENAI_API_KEY setzen + direkten Login (sonst Login per
                         Device-Code im Web-Terminal – ChatGPT-Plan ODER API-Key)
   --force               Vorhandenen Container mit gleichem Hostname löschen und neu anlegen
@@ -324,110 +321,44 @@ mkdir -p /etc/dhcp/dhclient-enter-hooks.d
 printf '# CodexAI-Server: resolv.conf nicht von DHCP überschreiben lassen\nmake_resolv_conf() { :; }\n' > /etc/dhcp/dhclient-enter-hooks.d/no-dns
 printf 'domain home.arpa\nsearch home.arpa\nnameserver %s\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n' "\${HOST_DNS:-1.1.1.1}" > /etc/resolv.conf
 
-echo ">>> Codex (\${CODEX_VERSION}) installieren – offizielles Release-Binary (SHA-256-verifiziert) ..."
-# Die Codex-CLI ist eine statische Rust-Binary (musl): kein Node/npm nötig.
-# Quelle: openai/codex GitHub-Releases, Tag rust-v<version>.
-# Verifikation: 1) gegen den gepinnten SHA-256 im Installer, 2) fallback gegen
-# das "digest"-Feld der GitHub-Release-API (für Versionen ohne Pin).
-CODEX_TARBALL="codex-x86_64-unknown-linux-musl.tar.gz"
-DL_URL_BASE="https://github.com/openai/codex/releases/download"
-REL_JSON="/tmp/codex-release.json"
-VER="\${CODEX_VERSION}"
-SUM="\${CODEX_SHA256}"
-if [[ "\${VER}" != "\${CODEX_PINNED_VERSION}" ]]; then
-    SUM=""   # der Pin gilt nur für die gepinnte Version
+echo ">>> Codex (\${CODEX_VERSION}) installieren – offizieller Standalone-Installer (packaged CLI) ..."
+# WICHTIG (Live-Grube #19): die nackte musl-Binary aus dem Asset
+# 'codex-x86_64-unknown-linux-musl.tar.gz' ist KEIN vollwertiges Paket – die
+# TUI braucht das 'codex-package-*'-Asset (bin/codex + codex-code-mode-host +
+# rg + bwrap + codex-package.json) und meldet sonst beim Start:
+#   "Error: this CLI has no complete local package"
+# Der offizielle Standalone-Installer (chatgpt.com/codex/install.sh, POSIX sh,
+# braucht nur mktemp+tar) baut genau dieses Paket-Layout auf
+# (~/.codex/packages/standalone/releases/<v>-<target> + current-Symlink +
+# Wrapper in ~/.local/bin) und verifiziert die Downloads selbst gegen
+# codex-package_SHA256SUMS. Version via CODEX_RELEASE, Prompt-frei via
+# CODEX_NON_INTERACTIVE. releases.openai.com wird bevorzugt, GitHub-Fallback.
+export HOME="/root"   # Installer + Codex legen ~/.codex an – als root fixieren
+export PATH="/root/.local/bin:/usr/local/bin:\$PATH"
+if ! curl -fsSL --retry 3 "https://chatgpt.com/codex/install.sh" \
+        | env CODEX_RELEASE="\${CODEX_VERSION}" CODEX_NON_INTERACTIVE=true sh; then
+    echo "FEHLER: Der offizielle Codex-Standalone-Installer ist fehlgeschlagen."
+    echo "  Log oben prüfen (releases.openai.com / github.com erreichbar?)."
+    echo "  Feste Version setzen: ${ONE_LINER} --codex-version 0.170.0"
+    exit 8
 fi
-
-fetch_digest() {
-    # Liest das sha256-Digest des Codex-Tarballs aus der GitHub-Release-API.
-    # Das digest-Feld liegt im selben Asset-Objekt wie der Name – Fenster von
-    # 4000 Zeichen nach dem Namen per awk (kein jq nötig). Bewusst OHNE
-    # Interval-Regex ({64}): mawk (Debian-Default) unterstützt die nicht.
-    local tag="\$1"
-    curl -fsSL --retry 3 "https://api.github.com/repos/openai/codex/releases/tags/rust-v\${tag}" -o "\$REL_JSON" || return 1
-    awk -v needle='"name":"codex-x86_64-unknown-linux-musl.tar.gz"' '
-        index(\$0, needle) {
-            rest = substr(\$0, index(\$0, needle) + length(needle), 4000)
-            p = index(rest, "\"digest\":\"sha256:")
-            if (p > 0) {
-                print substr(rest, p + 17, 64)
-                exit
-            }
-        }' "\$REL_JSON"
-}
-
-if [[ "\${VER}" == "latest" ]]; then
-    curl -fsSL --retry 3 "https://api.github.com/repos/openai/codex/releases/latest" -o "\$REL_JSON"
-    TAG=\$(awk -F'"' '{ for (i = 1; i < NF; i++) if (\$i == "tag_name" && \$(i+2) ~ /^rust-v/) { v = \$(i+2); sub(/^rust-v/, "", v); print v; exit } }' "\$REL_JSON")
-    if [[ -z "\$TAG" ]]; then
-        echo "FEHLER: Konne den neuesten Release-Tag nicht aus der GitHub-API lesen."
-        echo "  Rate-Limit? Manuell prüfen: https://github.com/openai/codex/releases/latest"
-        echo "  Oder feste Version setzen: ${ONE_LINER} --codex-version 0.170.0"
-        exit 12
-    fi
-    VER="\$TAG"
-    SUM=""
-    echo ">>> Neueste Codex-Version laut GitHub-API: \${VER}"
+CODEX_BIN="\$(command -v codex || true)"
+if [[ -z "\$CODEX_BIN" && -x /root/.local/bin/codex ]]; then
+    CODEX_BIN=/root/.local/bin/codex
 fi
-
-# Bereits installierte Version überspringen (Update ohne Re-Download)
-if [[ -x /usr/local/bin/codex ]]; then
-    CUR_VER=\$(/usr/local/bin/codex --version 2>/dev/null || true)
-    if grep -q "codex-cli \${VER}" <<< "\$CUR_VER"; then
-        echo ">>> Codex \${VER} ist bereits installiert – Download übersprungen."
-    else
-        CUR_VER=""
-    fi
+if [[ -z "\$CODEX_BIN" || ! -x "\$CODEX_BIN" ]]; then
+    echo "FEHLER: codex nach dem Installer-Lauf nicht gefunden."
+    echo "  Manuell prüfen: curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+    exit 8
 fi
-
-if [[ -z "\${CUR_VER:-}" ]]; then
-    curl -fsSL --retry 3 "\${DL_URL_BASE}/rust-v\${VER}/\${CODEX_TARBALL}" -o /tmp/codex.tar.gz
-    ACTUAL_SUM=\$(sha256sum /tmp/codex.tar.gz | awk '{print \$1}')
-    if [[ "\${SUM}" != "\${ACTUAL_SUM}" ]]; then
-        echo ">>> Pin trifft nicht (oder fehlt) – verifiziere gegen das digest-Feld der GitHub-Release-API ..."
-        SUM=\$(fetch_digest "\${VER}" || true)
-        if [[ -z "\$SUM" ]]; then
-            echo "FEHLER: SHA-256 nicht ermittelbar (Pin + GitHub-API beide ohne Treffer)."
-            echo "  Rate-Limit? Später erneut oder feste Version setzen."
-            exit 12
-        fi
-    fi
-    if [[ "\${SUM}" != "\${ACTUAL_SUM}" ]]; then
-        echo "FEHLER: SHA-256-MISMATCH beim Codex-Tarball – Download verworfen."
-        echo "  Erwartet: \${SUM}"
-        echo "  Erhalten: \${ACTUAL_SUM}"
-        echo "  Download: \${DL_URL_BASE}/rust-v\${VER}/\${CODEX_TARBALL}"
-        exit 13
-    fi
-    echo ">>> SHA-256 verifiziert: \${ACTUAL_SUM}"
-    rm -rf /tmp/codex-extract && mkdir -p /tmp/codex-extract
-    tar -xzf /tmp/codex.tar.gz -C /tmp/codex-extract
-    # Layout der Releases: 0.170.0 = EINE Datei 'codex-x86_64-unknown-linux-musl'
-    # (das Binary selbst). Zukünftige Releases könnten ein Verzeichnis mit
-    # 'codex' darin bringen – beide Fälle abdecken.
-    CODEX_SRC=""
-    if [[ -f /tmp/codex-extract/codex-x86_64-unknown-linux-musl ]]; then
-        CODEX_SRC=/tmp/codex-extract/codex-x86_64-unknown-linux-musl
-    elif [[ -f /tmp/codex-extract/codex-x86_64-unknown-linux-musl/codex ]]; then
-        CODEX_SRC=/tmp/codex-extract/codex-x86_64-unknown-linux-musl/codex
-    elif [[ -f /tmp/codex-extract/codex ]]; then
-        CODEX_SRC=/tmp/codex-extract/codex
-    fi
-    if [[ -z "\$CODEX_SRC" ]]; then
-        echo "FEHLER: Kein codex-Binary im Tarball gefunden (Layout geändert?)."
-        echo "  Inhalt: \$(tar -tzf /tmp/codex.tar.gz | head -5)"
-        exit 14
-    fi
-    install -m 755 "\$CODEX_SRC" /usr/local/bin/codex
-    rm -rf /tmp/codex-extract /tmp/codex.tar.gz "\$REL_JSON"
-    CODEX_VER_OUT=\$(/usr/local/bin/codex --version 2>/dev/null || true)
-    if grep -q "codex-cli \${VER}" <<< "\$CODEX_VER_OUT"; then
-        echo "Codex \${CODEX_VER_OUT} einsatzbereit"
-    else
-        echo "FEHLER: codex --version meldet nicht die erwartete Version \${VER}."
-        echo "  Ausgabe war: \${CODEX_VER_OUT:-<leer>}"
-        exit 15
-    fi
+ln -sfn "\$CODEX_BIN" /usr/local/bin/codex
+CODEX_VER_OUT=\$(codex --version 2>/dev/null || true)
+if grep -q "^codex-cli " <<< "\$CODEX_VER_OUT"; then
+    echo "Codex \${CODEX_VER_OUT} einsatzbereit (packaged CLI)"
+else
+    echo "FEHLER: codex --version liefert keine Versionszeile."
+    echo "  Ausgabe war: \${CODEX_VER_OUT:-<leer>}"
+    exit 15
 fi
 
 echo ">>> ttyd ${TTYD_VERSION} installieren (statisches Web-Terminal-Binary) ..."
@@ -497,7 +428,9 @@ fi
 cat > /opt/codex-ai/session.sh <<'WRAPEOF'
 #!/usr/bin/env bash
 # Codex Dauersession-Wrapper: startet codex immer wieder neu (Respawn).
-export PATH="/usr/local/bin:\${PATH}"
+# PATH enthält /root/.local/bin (Standalone-Installer-Wrapper) und /usr/local/bin.
+export HOME="/root"
+export PATH="/root/.local/bin:/usr/local/bin:\${PATH}"
 if [[ -f /opt/codex-ai/codex.env ]]; then
     . /opt/codex-ai/codex.env
 fi
@@ -560,8 +493,7 @@ run_inner_setup() {
     # Template hat kein curl, pct exec curl → Exit 127!
     # Grube (tee-Pipe): ohne exit ${PIPESTATUS[0]} frisst die Pipe den inner-
     # Exit-Code (Fehler im inner liefen als "erfolgreich" durch!).
-    pct exec "$ct_id" -- env CODEX_VERSION="$CODEX_VERSION" CODEX_SHA256="$CODEX_SHA256" \
-        CODEX_PINNED_VERSION="${CODEX_VERSION}" PORT="$PORT" \
+    pct exec "$ct_id" -- env CODEX_VERSION="$CODEX_VERSION" PORT="$PORT" \
         WEB_PASSWORD="$WEB_PASSWORD" API_KEY="$API_KEY" HOST_DNS="$HOST_DNS" \
         bash -c "bash /root/setup-inner.sh 2>&1 | tee /var/log/codex-ai-setup.log; exit \${PIPESTATUS[0]}"
 }
@@ -599,8 +531,8 @@ verify_installation() {
         sleep 1
     done
 
-    # Codex-Binary benutzbar?
-    codex_ver=$(pct exec "$ct_id" -- sh -c 'export PATH=/usr/local/bin:$PATH; codex --version 2>/dev/null' 2>/dev/null || true)
+    # Codex-Binary benutzbar? (packaged CLI: Wrapper in ~/.local/bin)
+    codex_ver=$(pct exec "$ct_id" -- sh -c 'export PATH=/root/.local/bin:/usr/local/bin:$PATH; codex --version 2>/dev/null' 2>/dev/null || true)
     if [[ -z "$codex_ver" ]]; then
         die "codex --version liefert keine Ausgabe.\n  Debug: pct enter $ct_id   (dann: codex --version)"
     fi
@@ -659,7 +591,7 @@ print_summary() {
         echo -e "  ${GREEN}  🔏 API-Key:       gesetzt (${API_KEY:0:8}…, in /opt/codex-ai/codex.env)${NC}"
     fi
     echo -e "  ${GREEN}  📁 Workspace:     /root/codex-workspace  (im Container)${NC}"
-    echo -e "  ${GREEN}  🧠 Codex:         ${CODEX_VERSION} (offizielles Release-Binary)${NC}"
+    echo -e "  ${GREEN}  🧠 Codex:         ${CODEX_VERSION} (offizieller Standalone-Installer)${NC}"
     echo -e "  ${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "  ${CYAN}So läuft die Session (dauerhaft – Reboot-sicher, Respawn bei Beenden):${NC}"
@@ -897,11 +829,11 @@ do_status() {
         warn "Container hat keine IP (läuft er?)."
     fi
 
-    codex_ver=$(pct exec "$ct_id" -- sh -c 'export PATH=/usr/local/bin:$PATH; codex --version 2>/dev/null' 2>/dev/null || true)
+    codex_ver=$(pct exec "$ct_id" -- sh -c 'export PATH=/root/.local/bin:/usr/local/bin:$PATH; codex --version 2>/dev/null' 2>/dev/null || true)
     info "Codex:     ${codex_ver:-unbekannt} (OpenAI Codex CLI)"
 
-    login_out=$(pct exec "$ct_id" -- sh -c 'export PATH=/usr/local/bin:$PATH; codex login status 2>&1' 2>/dev/null || true)
-    if pct exec "$ct_id" -- sh -c 'export PATH=/usr/local/bin:$PATH; codex login status >/dev/null 2>&1'; then
+    login_out=$(pct exec "$ct_id" -- sh -c 'export PATH=/root/.local/bin:/usr/local/bin:$PATH; codex login status 2>&1' 2>/dev/null || true)
+    if pct exec "$ct_id" -- sh -c 'export PATH=/root/.local/bin:/usr/local/bin:$PATH; codex login status >/dev/null 2>&1'; then
         ok "Login:     eingeloggt (${login_out})"
     else
         warn "Login:     NICHT eingeloggt – im Web-Terminal: codex login --device-auth"
