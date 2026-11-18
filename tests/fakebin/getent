@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Mock: getent – DNS-Simulation für verify_ct_dns.
+# Modi ($HARNESS_DNS_MODE):
+#   ok     – jede Anfrage erfolgreich (Default)
+#   flaky4 – die ersten 4 Anfragen schlagen fehl, danach ok
+#            (prüft das 3-Erfolge-Fenster / Reset, Grube 11a)
+#   late   – die ersten 10 Anfragen schlagen fehl, danach ok
+#            (triggert den Fallback-Pfad: Loop bricht nach 10 Versuchen ab)
+#   dead   – alle Anfragen schlagen fehl (Fallback hilft auch nicht → die())
+set -uo pipefail
+
+STATE="${HARNESS_STATE:?HARNESS_STATE fehlt}"
+mkdir -p "$STATE"
+
+n=$(cat "$STATE/getent.count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$STATE/getent.count"
+
+case "${HARNESS_DNS_MODE:-ok}" in
+    ok) exit 0 ;;
+    flaky4) [[ $n -le 4 ]] && exit 2; exit 0 ;;
+    late) [[ $n -le 10 ]] && exit 2; exit 0 ;;
+    dead) exit 2 ;;
+    *) exit 0 ;;
+esac

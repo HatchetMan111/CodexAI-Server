@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Mock: pveam (Proxmox Template-Marketplace) – liefert ein Debian-12-Template.
+set -uo pipefail
+
+STATE="${HARNESS_STATE:?HARNESS_STATE fehlt}"
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+echo "pveam $cmd $*" >> "$STATE/pveam-calls.log"
+
+case "$cmd" in
+    list | available)
+        echo "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+        ;;
+    update | download)
+        ;;
+    *)
+        echo "mock-pveam: unbekannter Befehl: $cmd" >&2
+        exit 64
+        ;;
+esac
+exit 0

@@ -1,0 +1,18 @@
+[Unit]
+Description=Codex Dauersession (tmux 'codex')
+Documentation=https://github.com/HatchetMan111/CodexAI-Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+# Alte Session killen, falls vorhanden (macht Update/Re-Run idempotent)
+ExecStartPre=-/usr/bin/tmux kill-session -t codex
+ExecStart=/usr/bin/tmux new-session -d -s codex -c /root/codex-workspace /opt/codex-ai/session.sh
+ExecStop=/usr/bin/tmux kill-session -t codex
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

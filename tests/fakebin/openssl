@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mock: openssl – deterministische Zufallswerte (für assertierbare Passwörter).
+if [[ "${1:-}" == "rand" ]]; then
+    case "${2:-}" in
+        -base64) echo "MockRootPW1234" ;;
+        -hex) echo "aabbccdd00112233aabbccdd00112233" ;;
+        *) echo "mock-openssl: rand $2 nicht gemockt" >&2; exit 64 ;;
+    esac
+    exit 0
+fi
+exec /usr/bin/openssl "$@"

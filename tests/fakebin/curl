@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Mock: curl – stellt Test-Assets bereit; HTTP-Checks gegen den systemd-State.
+set -uo pipefail
+
+STATE="${HARNESS_STATE:?HARNESS_STATE fehlt}"
+mkdir -p "$STATE/curl-calls"
+
+out=""
+url=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    a="${args[$i]}"
+    case "$a" in
+        -o | --output)
+            out="${args[$((i + 1))]:-}"
+            i=$((i + 1))
+            ;;
+        -*) ;;
+        *) url="$a" ;;
+    esac
+done
+echo "$url" >> "$STATE/curl-calls/urls.log"
+
+case "$url" in
+    *codeload.github.com*)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (codeload)" >&2; exit 1; }
+        cp "${HARNESS_SRC_TARBALL:?HARNESS_SRC_TARBALL fehlt}" "$out"
+        ;;
+    *api.github.com/repos/openai/codex/releases*)
+        # Release-API (latest + tags): Fixture-JSON mit tag_name und dem
+        # digest-Feld des Codex-Tarballs. HARNESS_SHA_FAIL=1 verbiegt das
+        # digest → Installer muss mit SHA-256-MISMATCH abbrechen (Exit 13).
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (release-api)" >&2; exit 1; }
+        if [[ "${HARNESS_SHA_FAIL:-0}" == "1" ]]; then
+            sed 's/"digest":"sha256:[0-9a-f]*"/"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"/' \
+                "${HARNESS_REL_JSON:?HARNESS_REL_JSON fehlt}" > "$out"
+        else
+            cp "${HARNESS_REL_JSON:?HARNESS_REL_JSON fehlt}" "$out"
+        fi
+        ;;
+    *github.com/openai/codex/releases/download/*codex-x86_64-unknown-linux-musl.tar.gz)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (codex-tarball)" >&2; exit 1; }
+        cp "${HARNESS_CODEX_TARBALL:?HARNESS_CODEX_TARBALL fehlt}" "$out"
+        ;;
+    *ttyd/releases/download/*ttyd.x86_64)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (ttyd)" >&2; exit 1; }
+        # Gleiche Quelle wie die SHA256SUMS-Zeile unten → Checksumme stimmt.
+        cp "${HARNESS_ASSETS:?}/mock-ttyd.sh" "$out"
+        chmod +x "$out"
+        ;;
+    *ttyd/releases/download/*SHA256SUMS)
+        [[ -n "$out" ]] || { echo "mock-curl: -o fehlt (SHA256SUMS)" >&2; exit 1; }
+        sum=$(sha256sum "${HARNESS_ASSETS:?}/mock-ttyd.sh" | awk '{print $1}')
+        printf '%s  ttyd.x86_64\n' "$sum" > "$out"
+        ;;
+    http://127.0.0.1:*)
+        # Web-Terminal-Check (Port 8091): 200 wenn codex-ai-web aktiv ist
+        if [[ "$url" == *":8091"* ]]; then
+            if [[ -f "$STATE/systemd/codex-ai-web.service.active" ]]; then
+                printf '200'
+            else
+                printf '000'
+            fi
+        else
+            printf '200'
+        fi
+        ;;
+    *)
+        echo "mock-curl: unerwartete URL: $url" >&2
+        exit 6
+        ;;
+esac

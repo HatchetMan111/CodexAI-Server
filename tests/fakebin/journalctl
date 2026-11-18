@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Mock: journalctl – gibt deterministische Mock-Zeilen zurück.
+echo "mock-journalctl: $*"
+exit 0

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Mock: pct (Proxmox-Container-Toolkit) – state-basiert für den Test-Harness.
+# State: $HARNESS_STATE/cts/<id> = "status hostname ip"
+set -uo pipefail
+
+STATE="${HARNESS_STATE:?HARNESS_STATE fehlt}"
+LOG="$STATE/pct-calls.log"
+mkdir -p "$STATE/cts"
+
+log_call() { echo "pct $*" >> "$LOG"; }
+
+ct_field() { # $1=file $2=field(1=status 2=hostname 3=ip)
+    awk -v f="$2" '{print $f}' "$1"
+}
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+    list)
+        echo "VMID Status     Lock         Name"
+        for f in "$STATE"/cts/*; do
+            [[ -e "$f" ]] || continue
+            id=$(basename "$f")
+            echo "$id  $(ct_field "$f" 1)   $(ct_field "$f" 2)"
+        done
+        ;;
+    status)
+        id="${1:?id fehlt}"; log_call status "$id"
+        f="$STATE/cts/$id"
+        if [[ ! -f "$f" ]]; then
+            echo "px: $id not found" >&2
+            exit 2
+        fi
+        echo "status: $(ct_field "$f" 1)"
+        ;;
+    create)
+        id="${1:?id fehlt}"; shift
+        log_call create "$id" "$@"
+        echo "$@" > "$STATE/pct-create-$id.args"
+        if [[ "${HARNESS_FAIL_CREATE:-0}" == "1" ]]; then
+            echo "mock-pct: create fehlgeschlagen (HARNESS_FAIL_CREATE=1)" >&2
+            exit 9
+        fi
+        hn=$(awk '$1=="--hostname" {print $2}' "$STATE/pct-create-$id.args")
+        printf 'running %s 10.0.0.42\n' "$hn" > "$STATE/cts/$id"
+        ;;
+    start)
+        id="${1:?id fehlt}"; log_call start "$id"
+        f="$STATE/cts/$id"
+        [[ -f "$f" ]] || { echo "px: $id not found" >&2; exit 2; }
+        printf 'running %s %s\n' "$(ct_field "$f" 2)" "$(ct_field "$f" 3)" > "$f"
+        ;;
+    stop)
+        id="${1:?id fehlt}"; log_call stop "$id"
+        f="$STATE/cts/$id"
+        [[ -f "$f" ]] || { echo "px: $id not found" >&2; exit 2; }
+        printf 'stopped %s %s\n' "$(ct_field "$f" 2)" "$(ct_field "$f" 3)" > "$f"
+        ;;
+    destroy)
+        id="${1:?id fehlt}"; log_call destroy "$id" "$@"
+        rm -f "$STATE/cts/$id"
+        ;;
+    push)
+        id="${1:?id fehlt}"; src="${2:?src fehlt}"; dst="${3:?dst fehlt}"
+        log_call push "$id" "$src" "$dst"
+        cp "$src" "$dst"
+        ;;
+    exec)
+        id="${1:?id fehlt}"; shift
+        [[ "${1:-}" == "--" ]] && shift
+        f="$STATE/cts/$id"
+        if [[ ! -f "$f" ]]; then
+            echo "px: $id not found" >&2
+            exit 2
+        fi
+        if [[ "$(ct_field "$f" 1)" != "running" ]]; then
+            echo "px: $id nicht running (Exit 255)" >&2
+            exit 255
+        fi
+        log_call exec "$id" "$*"
+        HARNESS_CT_IP="$(ct_field "$f" 3)"
+        export HARNESS_CT_IP
+        export FAKEBIN_PATH="${FAKEBIN_PATH:?FAKEBIN_PATH fehlt}"
+        exec env PATH="$FAKEBIN_PATH:$PATH" "$@"
+        ;;
+    *)
+        echo "mock-pct: unbekannter Befehl: $cmd" >&2
+        exit 64
+        ;;
+esac

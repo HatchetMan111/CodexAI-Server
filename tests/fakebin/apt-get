@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Mock: apt-get – tut nichts, meldet nur.
+echo "mock-apt-get: $*"
+exit 0
+
+# Zusätzliche Desktop-Pakete (claude-desktop) – tun im Mock nichts

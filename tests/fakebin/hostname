@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Mock: hostname – `hostname -I` liefert die Container-IP aus dem pct-State.
+if [[ "${1:-}" == "-I" ]]; then
+    echo "${HARNESS_CT_IP:-10.0.0.42}"
+    exit 0
+fi
+exec /bin/hostname "$@"
